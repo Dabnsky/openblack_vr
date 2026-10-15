@@ -9,6 +9,8 @@ The goal is to build OpenBlack natively on the headset, launch it through the su
 The starting points are:
 
 - The machine already has an ARM64 compiler/build environment, Vulkan support, the OpenXR loader development files, and SteamVR's ARM64 OpenXR runtime.
+- Desktop Vulkan rendering and camera/input are confirmed through the RDP X11 session (`DISPLAY=:10.0`); the SSH shell still fails on unsupported KMSDRM. Closing the desktop window caused a segmentation fault, recorded as a separate baseline cleanup defect.
+- The standalone probe has created an OpenXR instance, reported `SteamVR/OpenXR` version `2.17.10`, discovered an HMD system, enabled `XR_KHR_vulkan_enable2`, and queried a Vulkan API range of `1.0.0` through `1.2.0`. Vulkan instance/device creation and headset frame submission are not yet verified.
 - OpenBlack currently builds as an SDL2 desktop application and renders through bgfx. It has no OpenXR dependency, session lifecycle, stereo view family, or tracked-controller input path.
 - The game loop and current mouse-driven Hand interaction live in `src/Game.cpp`. Renderer ownership is centered in `src/Graphics/Renderer.cpp` and the `RendererInterface` contract.
 - The base game requires legally obtained original Black & White data. Keep those files outside the repository and pass their directory using `-g`.
@@ -34,7 +36,7 @@ The project currently selects Vulkan by default on non-Apple systems, but that o
 
 ## Tools Present on This Machine
 
-The following were observed on the SteamOS target on 2026-10-12:
+The following were observed on the SteamOS target on 2026-10-12, with build and probe findings updated through 2026-10-14:
 
 | Tool or capability | Observed result | How it is used here |
 | --- | --- | --- |
@@ -43,10 +45,11 @@ The following were observed on the SteamOS target on 2026-10-12:
 | Ninja | Installed | Used by the vcpkg Ninja preset; the system-deps preset uses Unix Makefiles. |
 | GCC/G++ and Clang/Clang++ | Installed | Native C++ compilers. CMake selects its compiler at first configure; set `CC`/`CXX` before configuring only if intentionally choosing another one. |
 | pkg-config | Installed | Queries installed system library metadata and emits include/link flags for small probes. |
-| SDL2 development metadata | 2.30.2 | OpenBlack's window, event, and desktop input dependency. |
-| OpenXR development metadata | 1.1 | Headers/loader development integration is discoverable with pkg-config; this is not evidence of an active headset runtime. |
+| SDL2 development metadata | 2.30.2; the built executable reports compiled/linked SDL 2.32.10 | OpenBlack's window, event, and desktop input dependency. System pkg-config metadata and the vcpkg-linked build need not identify the same installation. |
+| OpenXR development metadata | 1.1; pkg-config emits `-lopenxr_loader` | Headers are usable, but the default system library failed to link the probe. Use the diagnostic loader command below; metadata alone does not verify a usable library. |
+| Vulkan development metadata | 1.4.309; pkg-config emits `-lvulkan` | Separate from the runtime's queried OpenXR graphics API range of Vulkan 1.0.0 through 1.2.0. |
 | Vulkan tools/driver | `vulkaninfo` reports Vulkan 1.4 and Turnip/Mesa on Qualcomm Adreno 750 | Confirms a Vulkan device/driver is visible. The SSH/no-display invocation skips display-surface information. |
-| SteamVR/OpenXR runtime | `/opt/steamvr/steamxr_linuxarm64.json` names SteamVR; its relative `bin/linuxarm64/vrclient.so` library exists. SteamVR's `vrserver` and `vrcompositor` processes are running. | Use the native SteamVR-provided OpenXR runtime; do not install or hard-code a second runtime. Verify that the supported app launch context selects it. |
+| SteamVR/OpenXR runtime | The probe reports `SteamVR/OpenXR` version `2.17.10` and discovers an HMD. `/opt/steamvr/steamxr_linuxarm64.json` names SteamVR; its relative `bin/linuxarm64/vrclient.so` exists. | Discovery is verified in the tested terminal environment, not yet through the final headset app launch route. Do not hard-code a runtime manifest. |
 | `openxrinfo` utility | Not found on PATH | Do not use instructions that assume this diagnostic program is installed; the Stage 1 probe is still needed. |
 
 Reference the installed tools from the repository root with:
@@ -64,7 +67,7 @@ vulkaninfo --summary
 cmake --list-presets
 ```
 
-`pkg-config --cflags --libs openxr` shows the compiler and linker flags for a standalone OpenXR probe. The project itself uses CMake `find_package` for its dependencies, so a pkg-config result is a diagnostic and not a replacement for a successful project configure. In particular, bgfx does not provide pkg-config metadata in this environment; CMake must still find the bgfx package expected by this checkout.
+`pkg-config --cflags --libs openxr` shows the advertised compiler and linker flags, but the default system loader failed the actual probe link; see the diagnostic workaround below. The project itself uses CMake `find_package` for its dependencies, so a pkg-config result is a diagnostic and not a replacement for a successful project configure. In particular, bgfx does not provide pkg-config metadata in this environment; CMake must still find the bgfx package expected by this checkout.
 
 The conventional `/usr/share/openxr/1` directory contains API-layer data but no active-runtime manifest, `/etc/openxr/1` is absent, and `XR_RUNTIME_JSON` is unset in this shell. Separately, `/opt/steamvr/steamxr_linuxarm64.json` registers SteamVR's native ARM64 OpenXR runtime, and SteamVR is currently running. Steam's Lepton container overlay also has an `active_runtime.json` for SteamVR, so runtime selection may be supplied through its managed app environment. Verify which runtime manifest a native OpenBlack process sees when launched through the supported headset path; do not hard-code the container path. `vulkaninfo --summary` was run without `DISPLAY`, so run surface diagnostics from the supported graphical/headset session when needed.
 
@@ -94,6 +97,10 @@ The diagram shows the desired connections, not functionality already present. In
 
 Build directly on this Steam Frame environment. It is already the native ARM64 target, so no cross toolchain, sysroot, or Android preset is needed. The repository has no generic Linux ARM64 cross preset; the Android ARM64 preset is not a substitute.
 
+### Confirmed Build Route
+
+The `linux-system-deps` preset currently fails on this machine because the system STB headers are not installed (`Stb_INCLUDE_DIR-NOTFOUND`). Do not retry that preset to get past this error. Use the repository's vcpkg preset instead: it selected the native `arm64-linux` triplet, installed the declared dependencies including STB, and configured successfully. The native Release build completed, the executable's `--help` output works, and all seven Release tests pass.
+
 1. Confirm the checkout and available presets:
 
    ```sh
@@ -103,38 +110,91 @@ Build directly on this Steam Frame environment. It is already the native ARM64 t
 
    The checked-in submodule is vcpkg. bgfx is obtained through the dependency setup, not as a declared git submodule.
 
-2. Use the tools already present on this target first. The inventory above confirms CMake, compilers, Ninja, SDL2 metadata, OpenXR metadata, and Vulkan tools. Configure the system-dependency preset; if CMake identifies a missing project dependency, use the SteamOS-supported development/package workflow for this image or the repository's vcpkg preset rather than installing packages blindly. The base project does not yet require OpenXR.
-
-3. Configure and build the current, non-VR application using the system dependency preset:
-
-   ```sh
-   cmake --preset linux-system-deps
-   cmake --build --preset linux-system-deps-release --parallel
-   ```
-
-   This preset uses system-installed project dependencies and produces a native AArch64 binary. Or use the vcpkg preset where appropriate, after confirming vcpkg's target triplet resolves to native ARM64 on this build:
+2. Configure with vcpkg and build the native Release target:
 
    ```sh
    cmake --preset ninja-multi-vcpkg
-   cmake --build --preset ninja-multi-vcpkg-release --parallel
+   cmake --build --preset ninja-multi-vcpkg-release --parallel 4
    ```
 
-   `linux-system-deps` is a configure preset; use the corresponding build preset, such as `linux-system-deps-release` or `linux-system-deps-debug`. Because configure runs on the target, this build uses its native compiler and ABI. Inspect the vcpkg triplet before relying on vcpkg; do not assume it selected ARM64 solely from a preset name.
+   The first configure downloads/builds the dependency set and can take several minutes. On this machine vcpkg detected `/usr/bin/c++` and selected `arm64-linux`; subsequent configures reuse the installed packages. `linux-system-deps` remains an option only after its missing system dependencies, including STB, are provided through a SteamOS-supported package/development environment.
 
-4. Verify the executable and CLI, then test with legally obtained original game data:
+3. Check the executable and run the tests:
 
    ```sh
-   ./cmake-build-presets/linux-system-deps/bin/openblack --help
-   ./cmake-build-presets/linux-system-deps/bin/openblack -g /path/to/Black-and-White
+   ./cmake-build-presets/ninja-multi-vcpkg/bin/Release/openblack --help
+   ctest --preset ninja-multi-vcpkg-release
    ```
 
-   The game path must contain the expected `Data` and `Scripts` trees; audio files are also used by the game. Start by validating the normal SDL windowed build and logs on this device before introducing headset-mode launch settings. A successful windowed launch validates the native build, not VR compositor integration.
+   These checks were run successfully on this machine: all seven tests passed. `--help` confirms the executable starts but does not initialize graphics or prove headset support.
 
-5. Run tests when they are configured. The top-level CMake only enables tests when GTest is found and the build is not cross-compiling. The checked-in test presets cover the vcpkg Ninja configurations; for a system-dependency build, use CTest directly:
+4. Keep the original game data outside the source tree. The directory containing `Data` and `Scripts` is accepted by the `-g` option; audio data is also used. This command rendered the island and allowed camera movement/interaction when run from the RDP X11 terminal:
 
    ```sh
-   ctest --test-dir cmake-build-presets/linux-system-deps --output-on-failure
+   ./cmake-build-presets/ninja-multi-vcpkg/bin/Release/openblack \
+     -g "/home/steamos/david/games/Black & White/" -b Vulkan -l stdout
    ```
+
+### Current On-Device Launch Finding
+
+On 2026-10-13, an SSH-shell Vulkan launch aborted with `Unsupported platform or window manager: 13`. In SDL 2.32.10, subsystem value 13 is `SDL_SYSWM_KMSDRM`. That shell had no `DISPLAY` or `WAYLAND_DISPLAY`, so SDL created a direct KMSDRM window. [`src/Windowing/Sdl2WindowingSystem.cpp`](src/Windowing/Sdl2WindowingSystem.cpp) currently extracts native handles for Wayland, X11, Windows, macOS, Vivante, and Android, but not KMSDRM. The bundled bgfx Vulkan backend supports Wayland and Xlib/XCB surfaces; it has no KMSDRM surface path. This is a window/backend compatibility gap, not an asset-path or Vulkan-driver error.
+
+Do not work around this by treating SDL's KMSDRM file descriptor or GBM device as an X11/Wayland window. SDL marks those KMSDRM handles unavailable for Vulkan windows, and bgfx has no matching KMSDRM native-handle type.
+
+The same asset path was tested with `-b Noop -l stdout -n 1`: OpenBlack initialized, progressed through game-data/level loading, and shut down without the KMSDRM exception. It logged several currently unimplemented game-script functions and asset warnings, so this confirms the directory is readable, not that the game is fully playable.
+
+The RDP terminal provided `DISPLAY=:10.0`, with `WAYLAND_DISPLAY` and `SDL_VIDEODRIVER` empty. In that X11 session, the island rendered and camera movement/interaction worked. Wayland is therefore not a prerequisite for continuing. This does not establish desktop rendering from SSH or the final SteamVR app launch route.
+
+Closing the RDP game window produced `Segmentation fault (core dumped)` after audio cleanup messages. Record this as a window-close/cleanup defect, not a failure to render. The preceding audio messages do not identify the cause; obtain a backtrace before assigning it to a subsystem. Resolve or characterize it before engine lifecycle integration. Asset warnings and unimplemented script messages also remain; the successful desktop test does not imply full game compatibility.
+
+**Next step:** continue the independent OpenXR probe below. Do not force a Wayland driver in the SSH shell or add KMSDRM handle workarounds. VR rendering must target OpenXR swapchains rather than depend on an unsupported KMSDRM desktop-present surface.
+
+### Standalone OpenXR Probe Findings (2026-10-14)
+
+The probe is a separate learning executable, not OpenXR engine integration. Its verified output includes:
+
+```text
+XR_KHR_vulkan_enable2 advertised: yes
+fdm_injection: XR layer loaded
+Runtime: SteamVR/OpenXR
+Version: 2.17.10
+HMD system discovered.
+Minimum Vulkan API: 1.0.0
+Maximum Vulkan API: 1.2.0
+```
+
+This verifies instance creation, runtime identity, HMD system discovery, extension enumeration, enabling `XR_KHR_vulkan_enable2`, and calling `xrGetVulkanGraphicsRequirements2KHR`. The layer message is diagnostic output, not a reported failure; its purpose has not been investigated. Advertised extensions are not automatically enabled and do not establish support for every feature on the connected hardware.
+
+The returned Vulkan range describes OpenXR graphics integration requirements, not the GPU driver's maximum Vulkan capability. For the next exercise, explicitly request Vulkan 1.2 after checking it falls in that range. OpenXR's `XrVersion` encoding (`XR_MAKE_VERSION`) differs from Vulkan's API-version encoding (`VK_API_VERSION_1_2`); do not assign one directly to the other.
+
+#### Loader link failure and working diagnostic command
+
+Linking with `$(pkg-config --cflags --libs openxr)` or explicit `-lopenxr_loader` produced undefined references to core functions such as `xrCreateInstance`. Header compilation succeeded; this was a link-stage failure.
+
+Inspection found only `/usr/lib/libopenxr_loader.a` in the default library directory, owned by `gfxreconstruct`. Its members contain LTO data, and the symbol tools reported that a plugin was needed to read them. The exact archive/toolchain failure has not been fully diagnosed. SteamVR's `/opt/steamvr/bin/linuxarm64/libopenxr_loader.so` is an ARM64 shared loader with the required exported functions; linking it directly allowed the probe to run.
+
+From the directory containing the probe, the working command is:
+
+```sh
+g++ -std=c++17 -Wall -Wextra -Wpedantic \
+  xr_probe.cpp -o xr_probe \
+  /opt/steamvr/bin/linuxarm64/libopenxr_loader.so \
+  -Xlinker -rpath -Xlinker /opt/steamvr/bin/linuxarm64
+
+./xr_probe
+```
+
+Add `-lvulkan` when the probe starts calling Vulkan functions directly. The rpath is a shared-library search path; it does not select an OpenXR runtime manifest. No explicit runtime override was needed for the successful reported run. This is a device-specific diagnostic command, not the permanent OpenBlack dependency configuration. Do not replace system libraries or hard-code this path into engine source.
+
+#### Next unverified exercise
+
+1. Obtain `xrCreateVulkanInstanceKHR` using `xrGetInstanceProcAddr`.
+2. Create a Vulkan 1.2 instance through that function, passing `vkGetInstanceProcAddr` and the discovered HMD system ID. Check both the returned `XrResult` and output `VkResult`.
+3. Destroy the application-owned Vulkan instance with `vkDestroyInstance`, then destroy the OpenXR instance. This creation/cleanup exercise has been proposed but has no successful run recorded yet.
+4. Extend the probe to select the runtime-required physical GPU with `xrGetVulkanGraphicsDevice2KHR`, create a compatible logical device with `xrCreateVulkanDeviceKHR`, and only then create a graphics-bound OpenXR session.
+5. Handle session-state events, reference spaces, stereo views, swapchains, frame submission, and controller actions. No headset image or tracking/input test is verified yet.
+
+These probe resources must not become an unrelated second graphics device attached to OpenBlack. Prove compatible ownership and synchronization with bgfx before engine integration.
 
 ## Recommended VR Design
 
@@ -187,16 +247,19 @@ OpenXR controller poses are relative to a reference space and measured in meters
 
 ### Stage 0: Baseline and target facts
 
-- Record the upstream commit, compiler, target triple, bgfx backend, device OS/runtime version, and a successful non-VR build/run.
-- Verify how applications are launched in headset mode, confirm SteamVR is selected as the OpenXR runtime for the native process, check the runtime's supported graphics API, and determine whether SDL windows are expected.
+- Confirmed on this machine: native `arm64-linux` vcpkg configure, Release compilation, executable `--help`, and all seven Release tests pass.
+- Confirmed: asset-backed Vulkan rendering and camera/input work through RDP X11 (`DISPLAY=:10.0`). The no-display SSH launch still fails on unsupported KMSDRM; Wayland is not required for the established desktop baseline.
+- Known defect: closing the desktop window caused a segmentation fault; cause unverified without a backtrace.
+- Confirmed separately: the standalone probe reaches SteamVR/OpenXR 2.17.10 and discovers an HMD. The final SteamVR app launch context still needs verification.
 - Keep game data outside the repository and verify the `-g` asset path.
 
-**Done when:** the current game builds for native ARM64 and its normal path is reproducible; device runtime facts are written down rather than inferred from the OS name.
+**Status:** build/test and desktop rendering/input checkpoints are complete through RDP X11, with an outstanding window-close defect. Keep that defect visible during later regression checks; do not confuse it with the SSH-only KMSDRM blocker.
 
 ### Stage 1: OpenXR runtime probe
 
-- Build a tiny independent ARM64 executable using the target's OpenXR loader and SteamVR runtime, launched through the supported SteamVR app/session route.
-- Test session state transitions, both view poses, controller actions, and swapchain rendering.
+- Confirmed: the independent native probe creates an instance, reports SteamVR/OpenXR 2.17.10, discovers an HMD, enumerates extensions, enables `XR_KHR_vulkan_enable2`, and queries Vulkan requirements (1.0.0 through 1.2.0).
+- Next: create/destroy a Vulkan instance through OpenXR, select the runtime-required GPU, and create a compatible Vulkan device and OpenXR session.
+- Still to verify: the intended SteamVR app launch route, session state transitions, both view poses, controller actions, and swapchain rendering.
 - Measure frame timing and verify runtime selection after reboot/relaunch.
 
 **Done when:** the test scene is actually composited in the headset, not just rendered to a desktop window, and tracking/input are visible in logs.
@@ -241,6 +304,7 @@ Make these changes only after the OpenXR probe and bgfx interop milestones pass:
 | New `src/VR/` subsystem | Implement OpenXR instance/system/session lifecycle, session event handling, reference spaces, predicted frame timing, located views, swapchain lifecycle, controller actions, and tracking-to-world conversion. Keep OpenXR types out of asset-format components. |
 | [`src/Graphics/RendererInterface.h`](src/Graphics/RendererInterface.h) and [`src/Graphics/Renderer.cpp`](src/Graphics/Renderer.cpp) | Add a renderer-facing set of views and targets for stereo while retaining the current mono route. Implement the Vulkan/bgfx-to-OpenXR swapchain bridge only using a proven ownership and synchronization model. |
 | [`src/Graphics/RenderPass.h`](src/Graphics/RenderPass.h) | Reserve collision-free bgfx view IDs for left/right scene passes and any additional VR UI passes. Preserve the existing footprint, reflection, main, ImGui, and mesh-viewer assignments or migrate all IDs together. |
+| [`src/Windowing/Sdl2WindowingSystem.cpp`](src/Windowing/Sdl2WindowingSystem.cpp) and renderer initialization | Desktop rendering currently assumes an SDL native window type supported by bgfx (Wayland or X11/XCB on this build). Do not fake KMSDRM handles; either use a verified supported window system or make VR rendering target OpenXR swapchains without a desktop-present surface. |
 | [`src/Graphics/ShaderManager.cpp`](src/Graphics/ShaderManager.cpp), [`src/Camera/Camera.h`](src/Camera/Camera.h), and camera implementation | Provide per-eye view and projection matrices from OpenXR without changing desktop camera behavior. Validate handedness, asymmetric FOV, and reversed-Z depth. |
 | [`src/Game.cpp`](src/Game.cpp) and [`src/Game.h`](src/Game.h) | Coordinate OpenXR event polling and the wait/begin/render/end frame sequence at one boundary. Guarantee frame cleanup on skipped-render, pause, and shutdown paths. |
 | [`src/Input/`](src/Input/) and [`src/ECS/Systems/Implementations/HandSystem.cpp`](src/ECS/Systems/Implementations/HandSystem.cpp) | Introduce an input source abstraction for mouse/controller rays and action edges. Map the dominant controller to the existing world raycast and hand entity; preserve mouse/keyboard input. |
@@ -249,3 +313,14 @@ Make these changes only after the OpenXR probe and bgfx interop milestones pass:
 ## Development Workflow
 
 Use a dedicated topic branch and keep the desktop baseline easy to rebuild. Split work into runtime probe, renderer bridge, engine lifecycle, and controller interaction changes so each can be reviewed and tested independently. Sync with the upstream default branch when relevant changes land, and discuss the renderer-interoperability direction with OpenBlack maintainers before committing to a long-lived renderer fork.
+
+## Learning Resources
+
+OpenXR supplies the headset-facing lifecycle, timing, views, spaces, actions, and composition interface. Vulkan/bgfx still renders the world; existing OpenBlack systems still own gameplay and assets.
+
+- [OpenXR Tutorial](https://openxr-tutorial.com/): follow Introduction, Setup, Graphics (Vulkan), then Actions. Its graphics abstraction is instructional, not a ready-made bgfx bridge.
+- [OpenXR 1.1 specification](https://registry.khronos.org/OpenXR/specs/1.1/html/xrspec.html): authoritative lifecycle, ownership, synchronization, and extension rules.
+- [OpenXR API reference](https://registry.khronos.org/OpenXR/specs/1.1/man/html/): look up each function and structure while extending the probe.
+- [OpenXR loader specification](https://registry.khronos.org/OpenXR/specs/1.1/loader.html): loader/runtime separation and runtime discovery.
+- [XR_KHR_vulkan_enable2](https://registry.khronos.org/OpenXR/specs/1.1/html/xrspec.html#XR_KHR_vulkan_enable2): Vulkan requirements, runtime-assisted creation, and physical-device selection.
+- [OpenXR tutorial source](https://github.com/KhronosGroup/OpenXR-Tutorials) and [SDK source/samples](https://github.com/KhronosGroup/OpenXR-SDK-Source): complete examples to consult as the probe grows.
