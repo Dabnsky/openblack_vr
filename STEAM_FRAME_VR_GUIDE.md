@@ -2,6 +2,8 @@
 
 This guide describes the current OpenBlack code and SteamOS headset environment, the components needed for native VR, and a staged implementation path. The target is this machine: it reports `aarch64`, runs SteamOS `VARIANT_ID=vr`, and has SteamVR running. SteamVR supplies an ARM64 OpenXR runtime, so the planned app interface is OpenXR through the runtime already installed on the device. The first engineering risk to resolve is sharing graphics resources between OpenXR and OpenBlack's bgfx Vulkan renderer.
 
+For the block-by-block learning path, code explanations, and API references, follow the [OpenXR tutorial](OPENXR_TUTORIAL.md). This roadmap tracks platform findings and engine integration; the tutorial tracks the standalone probe exercises.
+
 ## Goal and Current Status
 
 The goal is to build OpenBlack natively on the headset, launch it through the supported SteamVR app path, render the game in both headset eyes, and use tracked controllers to interact with the island while preserving desktop input and rendering.
@@ -10,7 +12,7 @@ The starting points are:
 
 - The machine already has an ARM64 compiler/build environment, Vulkan support, the OpenXR loader development files, and SteamVR's ARM64 OpenXR runtime.
 - Desktop Vulkan rendering and camera/input are confirmed through the RDP X11 session (`DISPLAY=:10.0`); the SSH shell still fails on unsupported KMSDRM. Closing the desktop window caused a segmentation fault, recorded as a separate baseline cleanup defect.
-- The standalone probe has created an OpenXR instance, reported `SteamVR/OpenXR` version `2.17.10`, discovered an HMD system, enabled `XR_KHR_vulkan_enable2`, and queried a Vulkan API range of `1.0.0` through `1.2.0`. Vulkan instance/device creation and headset frame submission are not yet verified.
+- The standalone probe has created an OpenXR instance, reported `SteamVR/OpenXR` version `2.17.10`, discovered an HMD system, enabled `XR_KHR_vulkan_enable2`, and queried a Vulkan API range of `1.0.0` through `1.2.0`. On 2026-10-15, Vulkan instance creation, runtime-selected GPU `Turnip Adreno (TM) 750` (Vulkan `1.4.359`), graphics queue family 0, logical-device creation, and Vulkan-backed OpenXR session creation/cleanup were confirmed. Session-event observation is the current exercise; session beginning and headset frame submission are not yet verified.
 - OpenBlack currently builds as an SDL2 desktop application and renders through bgfx. It has no OpenXR dependency, session lifecycle, stereo view family, or tracked-controller input path.
 - The game loop and current mouse-driven Hand interaction live in `src/Game.cpp`. Renderer ownership is centered in `src/Graphics/Renderer.cpp` and the `RendererInterface` contract.
 - The base game requires legally obtained original Black & White data. Keep those files outside the repository and pass their directory using `-g`.
@@ -186,13 +188,20 @@ g++ -std=c++17 -Wall -Wextra -Wpedantic \
 
 Add `-lvulkan` when the probe starts calling Vulkan functions directly. The rpath is a shared-library search path; it does not select an OpenXR runtime manifest. No explicit runtime override was needed for the successful reported run. This is a device-specific diagnostic command, not the permanent OpenBlack dependency configuration. Do not replace system libraries or hard-code this path into engine source.
 
-#### Next unverified exercise
+#### Probe structure and next exercises
+
+The standalone [probe](src/VR/xr_probe.cpp) shares error handling through `CheckXr(instance, result, operation)` and extension lookup through `LoadXrFunction<PFN_...>(instance, name)`. The typed loader checks the lookup result, reports null pointers, and returns the requested function-pointer type. Callers gate dependent operations on a non-null result. Keep resource creation, API-specific output checks, and cleanup explicit; loading an entry point does not call it or create a graphics resource.
+
+`CheckXr` also handles pre-instance and post-destruction errors numerically when passed `XR_NULL_HANDLE`. `CheckRequiredExtension` owns enumeration and retries if the list grows between count and fill calls. `PrintXrVersion` shares OpenXR version formatting. `ProbeGraphics` follows the runtime/system/requirements/Vulkan/GPU stages with early returns instead of nested success blocks; `main` retains ownership and always cleans up created instances after the probe returns. Block comments explain version encodings, prerequisites, result channels, and borrowed versus owned handles.
+
+The refactored probe compiled with `-Wall -Wextra -Wpedantic -Werror` and completed a device smoke test on 2026-10-15. `xrGetVulkanGraphicsDevice2KHR` selected `Turnip Adreno (TM) 750`; its reported Vulkan API was `1.4.359`. This does not change the OpenXR graphics requirements range of 1.0 through 1.2.
 
 1. Obtain `xrCreateVulkanInstanceKHR` using `xrGetInstanceProcAddr`.
 2. Create a Vulkan 1.2 instance through that function, passing `vkGetInstanceProcAddr` and the discovered HMD system ID. Check both the returned `XrResult` and output `VkResult`.
-3. Destroy the application-owned Vulkan instance with `vkDestroyInstance`, then destroy the OpenXR instance. This creation/cleanup exercise has been proposed but has no successful run recorded yet.
-4. Extend the probe to select the runtime-required physical GPU with `xrGetVulkanGraphicsDevice2KHR`, create a compatible logical device with `xrCreateVulkanDeviceKHR`, and only then create a graphics-bound OpenXR session.
-5. Handle session-state events, reference spaces, stereo views, swapchains, frame submission, and controller actions. No headset image or tracking/input test is verified yet.
+3. Destroy the application-owned Vulkan instance with `vkDestroyInstance`, then destroy the OpenXR instance. This creation/cleanup exercise was confirmed by the user's successful run on 2026-10-15.
+4. Runtime-required physical GPU selection, graphics queue family 0 (one graphics queue), logical-device creation through `xrCreateVulkanDeviceKHR`, queue retrieval, and graphics-bound OpenXR session creation/cleanup were confirmed by subsequent user runs on 2026-10-15.
+5. Confirmed on 2026-10-15: `PRIMARY_STEREO` support; both views recommend 1728x1728 images, maximum 8192x8192, with recommended/maximum swapchain sample count 1. Event observation reported `IDLE` (1), then `READY` (2), without beginning the session, followed by expected teardown messages. Next: enumerate environment blend modes before implementing a running-session frame loop. See the [tutorial](OPENXR_TUTORIAL.md#102c-query-environment-blend-modes).
+6. Then handle session begin/end, reference spaces, stereo views, swapchains, frame submission, and controller actions. No headset image or tracking/input test is verified yet.
 
 These probe resources must not become an unrelated second graphics device attached to OpenBlack. Prove compatible ownership and synchronization with bgfx before engine integration.
 
@@ -258,7 +267,7 @@ OpenXR controller poses are relative to a reference space and measured in meters
 ### Stage 1: OpenXR runtime probe
 
 - Confirmed: the independent native probe creates an instance, reports SteamVR/OpenXR 2.17.10, discovers an HMD, enumerates extensions, enables `XR_KHR_vulkan_enable2`, and queries Vulkan requirements (1.0.0 through 1.2.0).
-- Next: create/destroy a Vulkan instance through OpenXR, select the runtime-required GPU, and create a compatible Vulkan device and OpenXR session.
+- Confirmed on 2026-10-15: create/destroy a Vulkan instance through OpenXR, select the runtime-required GPU (Turnip Adreno 750), select graphics queue family 0, create a compatible logical device, retrieve its queue, and create/destroy a Vulkan-backed OpenXR session. Next: observe session-state events before introducing session begin/end and frame submission.
 - Still to verify: the intended SteamVR app launch route, session state transitions, both view poses, controller actions, and swapchain rendering.
 - Measure frame timing and verify runtime selection after reboot/relaunch.
 
