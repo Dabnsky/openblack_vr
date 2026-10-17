@@ -10,6 +10,18 @@ Use the [VR roadmap](STEAM_FRAME_VR_GUIDE.md) for project architecture and engin
 integration planning. Use this tutorial to understand and extend the
 [standalone probe](src/VR/xr_probe.cpp).
 
+### Exercise-driven course pilot
+
+The [proposed course outline and pilot lesson](OPENXR_COURSE_PILOT.md) cover the
+next uncompleted milestone: session begin/end and the empty-frame lifecycle.
+They include focused C++ TODOs, exact placement instructions, separate host and
+on-device acceptance checks, and progressive hints. The
+[solution and block explanations](OPENXR_PILOT_SOLUTION.md) are kept separate.
+
+The pilot format is pending approval; the existing reference material below
+and working probe remain intact. Previously completed checkpoints are credited,
+and optional review exercises do not block progress.
+
 ## Contents
 
 1. [Goal and current checkpoint](#1-goal-and-current-checkpoint)

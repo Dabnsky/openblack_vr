@@ -4,6 +4,10 @@ This guide describes the current OpenBlack code and SteamOS headset environment,
 
 For the block-by-block learning path, code explanations, and API references, follow the [OpenXR tutorial](OPENXR_TUTORIAL.md). This roadmap tracks platform findings and engine integration; the tutorial tracks the standalone probe exercises.
 
+The [exercise-driven course outline and lifecycle pilot](OPENXR_COURSE_PILOT.md)
+are available for format review, with a [separate solution](OPENXR_PILOT_SOLUTION.md).
+This proposal does not change the working probe or establish new on-device results.
+
 ## Goal and Current Status
 
 The goal is to build OpenBlack natively on the headset, launch it through the supported SteamVR app path, render the game in both headset eyes, and use tracked controllers to interact with the island while preserving desktop input and rendering.
