@@ -716,6 +716,41 @@ bool ObserveSessionEvents(XrInstance instance, XrSession session)
     return true;
 }
 
+bool SubmitEmptyFrame(XrInstance instance, XrSession session) 
+{
+    XrFrameWaitInfo waitInfo{};
+    waitInfo.type = XR_TYPE_FRAME_WAIT_INFO;
+
+    XrFrameState frameState{};
+    frameState.type = XR_TYPE_FRAME_STATE;
+
+    if (!CheckXr(instance, xrWaitFrame(session, &waitInfo, &frameState), "xrWaitFrame"))
+    {
+        return false;
+    }
+
+    XrFrameBeginInfo beginInfo{};
+    beginInfo.type = XR_TYPE_FRAME_BEGIN_INFO;
+
+    if (!CheckXr(instance, xrBeginFrame(session, &beginInfo), "xrBeginFrame"))
+    {
+        return false;
+    }
+
+    XrFrameEndInfo endInfo{};
+    endInfo.type = XR_TYPE_FRAME_END_INFO;
+    endInfo.displayTime = frameState.predictedDisplayTime;
+    endInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    endInfo.layerCount = 0;
+    endInfo.layers = nullptr;
+
+    if (!CheckXr(instance, xrEndFrame(session, &endInfo), "xrEndFrame"))
+    {
+        return false;
+    }
+
+    return true;
+}
 
 int main()
 {
