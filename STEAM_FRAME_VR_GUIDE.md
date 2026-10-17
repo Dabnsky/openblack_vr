@@ -6,6 +6,60 @@ This guide describes the current OpenBlack code and SteamOS headset environment,
 
 The goal is to build OpenBlack natively on the headset, launch it through the supported SteamVR app path, render the game in both headset eyes, and use tracked controllers to interact with the island while preserving desktop input and rendering.
 
+### Fresh-start branch and learning approach
+
+This branch, `integrate-OpenXR-bgfx`, starts again from the desktop engine
+baseline. This overview preserves the project goal and useful findings from
+the earlier `vr/openxr` investigation, not its probe implementation, tutorial,
+or exercise scaffolding. Historical successes below are not implementations
+present on this branch and must not be reported as newly verified results.
+
+Use C++ for the native probe and eventual engine integration. OpenXR and
+Vulkan expose C APIs callable directly from C++; that does not require writing
+the application in C. Staying with the engine's language avoids introducing a
+second language toolchain and an additional foreign-function interface.
+
+Learn one concept at a time: explain the purpose and prerequisites, identify
+the relevant official API documentation, give a focused task, then review the
+learner's code and test its behavior before progressing. Give precise placement,
+ownership, and cleanup guidance. Prefer hints before full solutions unless
+requested. The learner will write their own summaries explaining how the
+pieces fit together; do not generate a full tutorial, exercise framework, or
+completed implementation automatically.
+
+### Historical device findings to retain
+
+Recorded through 2026-10-17 on the previous branch:
+
+| Boundary | Recorded evidence and limits |
+| --- | --- |
+| Native build | The `ninja-multi-vcpkg` preset selected `arm64-linux`; Release build, executable `--help`, and seven Release tests passed. The system-dependency preset failed on missing STB headers. |
+| Desktop window | RDP X11 with `DISPLAY=:10.0` rendered the island and accepted camera/input. Wayland was not required. The no-display SSH shell selected KMSDRM and failed with native window subsystem 13. Do not fake X11/Wayland handles for KMSDRM. |
+| Desktop shutdown | Closing the window produced a segmentation fault. Its cause was not diagnosed; preceding audio messages did not establish causation. |
+| Loader linking | Default `-lopenxr_loader` produced undefined references. `/usr/lib/libopenxr_loader.a` was supplied by `gfxreconstruct` and contained LTO objects the symbol tools could not read without a plugin. Exact archive/toolchain cause remained undiagnosed. Explicitly linking SteamVR's ARM64 shared loader worked. |
+| Runtime | The probe reached SteamVR/OpenXR, most recently version 2.18.2. This verifies its tested terminal launch, not every final SteamVR app/container launch route. |
+| Vulkan | `XR_KHR_vulkan_enable2` was supported. Runtime graphics requirements were Vulkan 1.0 through 1.2; the probe requested 1.2. Runtime-selected GPU was Turnip Adreno 750, most recently reporting Vulkan 1.4.362. These version domains are distinct. |
+| Graphics/session | Runtime-assisted Vulkan instance/device creation, graphics queue family 0 with one queue, and Vulkan-bound session creation/cleanup succeeded. |
+| Views | PRIMARY_STEREO supported; both views recommended 1728x1728, maximum 8192x8192, with recommended/maximum swapchain sample count 1. Query again rather than treating these as fixed panel specifications. |
+| Composition | OPAQUE (1) and ALPHA_BLEND (3) were advertised. Initial probe used opaque composition. |
+| Lifecycle | READY -> checked begin -> empty frames -> requested exit -> STOPPING -> checked end and resource cleanup succeeded. No rendered application layer or headset image was submitted. |
+| Remaining risks | Reference-space/eye tracking, swapchain rendering, controllers, bgfx resource interop, and final engine integration were not verified. Do not mark these complete based on an empty-frame test. |
+
+Historical diagnostic link command, to adapt only after writing the new
+standalone source:
+
+```sh
+g++ -std=c++17 -Wall -Wextra -Wpedantic -pthread \
+  xr_probe.cpp -o xr_probe \
+  /opt/steamvr/bin/linuxarm64/libopenxr_loader.so \
+  -lvulkan -Wl,-rpath,/opt/steamvr/bin/linuxarm64
+```
+
+The source in this command is not supplied on this fresh branch. Its explicit
+loader path is a device-specific workaround, not permanent engine dependency
+configuration or selection of a runtime manifest. Do not replace system
+libraries or hard-code runtime paths in the application.
+
 The starting points are:
 
 - The machine already has an ARM64 compiler/build environment, Vulkan support, the OpenXR loader development files, and SteamVR's ARM64 OpenXR runtime.
@@ -103,29 +157,25 @@ Build directly on this Steam Frame environment. It is already the native ARM64 t
 
    The checked-in submodule is vcpkg. bgfx is obtained through the dependency setup, not as a declared git submodule.
 
-2. Use the tools already present on this target first. The inventory above confirms CMake, compilers, Ninja, SDL2 metadata, OpenXR metadata, and Vulkan tools. Configure the system-dependency preset; if CMake identifies a missing project dependency, use the SteamOS-supported development/package workflow for this image or the repository's vcpkg preset rather than installing packages blindly. The base project does not yet require OpenXR.
+2. Use the tools already present on this target first. The base project does not yet require OpenXR. The earlier system-dependency configure failed on missing STB headers; use the previously successful vcpkg route rather than repeating that known failure or installing packages blindly.
 
-3. Configure and build the current, non-VR application using the system dependency preset:
-
-   ```sh
-   cmake --preset linux-system-deps
-   cmake --build --preset linux-system-deps-release --parallel
-   ```
-
-   This preset uses system-installed project dependencies and produces a native AArch64 binary. Or use the vcpkg preset where appropriate, after confirming vcpkg's target triplet resolves to native ARM64 on this build:
+3. Configure and build the current, non-VR application using the previously successful native vcpkg route:
 
    ```sh
    cmake --preset ninja-multi-vcpkg
-   cmake --build --preset ninja-multi-vcpkg-release --parallel
+   cmake --build --preset ninja-multi-vcpkg-release --parallel 4
    ```
 
-   `linux-system-deps` is a configure preset; use the corresponding build preset, such as `linux-system-deps-release` or `linux-system-deps-debug`. Because configure runs on the target, this build uses its native compiler and ABI. Inspect the vcpkg triplet before relying on vcpkg; do not assume it selected ARM64 solely from a preset name.
+   The earlier configure selected `arm64-linux`. Confirm that triplet again in
+   the configure output. The system-dependency route is an alternative only
+   after its missing dependencies are deliberately addressed.
 
 4. Verify the executable and CLI, then test with legally obtained original game data:
 
    ```sh
-   ./cmake-build-presets/linux-system-deps/bin/openblack --help
-   ./cmake-build-presets/linux-system-deps/bin/openblack -g /path/to/Black-and-White
+   ./cmake-build-presets/ninja-multi-vcpkg/bin/Release/openblack --help
+   ./cmake-build-presets/ninja-multi-vcpkg/bin/Release/openblack \
+     -g "/home/steamos/david/games/Black & White/" -b Vulkan -l stdout
    ```
 
    The game path must contain the expected `Data` and `Scripts` trees; audio files are also used by the game. Start by validating the normal SDL windowed build and logs on this device before introducing headset-mode launch settings. A successful windowed launch validates the native build, not VR compositor integration.
@@ -133,7 +183,7 @@ Build directly on this Steam Frame environment. It is already the native ARM64 t
 5. Run tests when they are configured. The top-level CMake only enables tests when GTest is found and the build is not cross-compiling. The checked-in test presets cover the vcpkg Ninja configurations; for a system-dependency build, use CTest directly:
 
    ```sh
-   ctest --test-dir cmake-build-presets/linux-system-deps --output-on-failure
+   ctest --preset ninja-multi-vcpkg-release
    ```
 
 ## Recommended VR Design
