@@ -159,3 +159,112 @@ Explain this in your own words:
 > Why does the third argument use `&extensionCount` rather than `extensionCount`?
 
 One or two sentences is enough. We'll review that before moving on.
+
+## Lesson 1 completion summary
+
+**Completed on 2026-10-18:** the standalone [probe](../src/OpenXR/probe.cpp)
+compiled, linked, and printed the global OpenXR extension names and versions
+in the learner's terminal launch environment. The sections above preserve
+the original starting lesson; this summary records the subsequent work.
+
+### Concepts learned
+
+- `XrResult` reports the operation's status, not the extension count.
+  `XR_FAILED(result)` tests whether the result is negative. Zero is
+  `XR_SUCCESS`; positive values are non-failure statuses whose meaning depends
+  on the function.
+- Passing `&extensionCount` gives OpenXR the address at which it can write
+  the count. It does not transfer ownership of the variable.
+- `std::vector<XrExtensionProperties> extensions(extensionCount)` creates
+  that many structures in contiguous, caller-owned storage. It does not
+  retrieve extension details.
+- A range-based loop with `XrExtensionProperties&` modifies the actual
+  vector elements. Without `&`, it would modify local copies.
+- Every output record needs `type = XR_TYPE_EXTENSION_PROPERTIES` and
+  `next = nullptr`. The repeated type identifies the structure format;
+  different records describe different extensions.
+- `next` does not link vector elements. For this structure it must be null;
+  OpenXR accesses the array using its pointer and capacity.
+- `extensions.data()` provides a pointer to the first element;
+  the capacity argument separately specifies how many elements may be written.
+- A `const XrExtensionProperties&` in the printing loop avoids copying and
+  prevents modification through that reference.
+- The vector releases its storage automatically when it goes out of scope.
+  No OpenXR instance, session, or other handle was created or needs destroying.
+
+### The completed two-call flow
+
+1. Query the required count using zero capacity and a null properties pointer.
+2. Check the result. Report failure and return a nonzero exit status if needed.
+3. If the successful query reports zero extensions, print a normal message
+   and return success. Zero extensions is not itself an API failure.
+4. Allocate the vector and initialize every record's `type` and `next`.
+5. Query again with the allocated capacity, `&returnedCount`, and
+   `extensions.data()`.
+6. Check the second result before using the records.
+7. Resize the vector to `returnedCount`, then print the name and version of
+   each record using a read-only range-based loop.
+
+The zero-count early exit prevents treating a later zero-capacity count query
+as though it had filled records. If the required count grows beyond a nonzero
+capacity between calls, `XR_ERROR_SIZE_INSUFFICIENT` is handled by the current
+error path. Automatic retry is not implemented.
+
+### Build and observed output
+
+The learner successfully built and ran the probe with:
+
+```sh
+g++ -std=c++17 -Wall -Wextra -Wpedantic \
+  src/OpenXR/probe.cpp \
+  /opt/steamvr/bin/linuxarm64/libopenxr_loader.so \
+  -Wl,-rpath,/opt/steamvr/bin/linuxarm64 \
+  -o src/OpenXR/openblack-xr-probe
+
+./src/OpenXR/openblack-xr-probe
+```
+
+`-o` selects the executable to create; run that same executable rather than an
+older binary. The explicit shared-loader path is a device-specific diagnostic
+workaround for the earlier default-loader link failure, not permanent engine
+dependency configuration. Linking a loader does not select the runtime.
+
+The reported output included:
+
+| Extension | Reported revision | Relevance |
+| --- | --- | --- |
+| `XR_KHR_vulkan_enable2` | 4 | Candidate OpenXR/Vulkan integration path |
+| `XR_EXT_debug_utils` | 5 | Diagnostic messaging and object labeling |
+| `XR_VALVE_frame_controller_interaction` | 1 | Frame-controller interaction profile |
+
+An extension's revision is not the Vulkan version or overall OpenXR API
+version. Enumeration advertises availability; it does not enable an extension
+or verify its features in use.
+
+### What this verifies, and what remains
+
+This is new evidence from the current probe: compilation, explicit loader
+linking, and global extension enumeration worked in the tested terminal
+environment.
+
+It does **not** verify runtime identity, instance creation, headset session
+lifecycle, tracking, controller input, rendered images, Vulkan/bgfx resource
+interop, or the final SteamVR application launch route. OpenBlack's desktop
+rendering path was not changed by this exercise.
+
+### Official references
+
+- [`xrEnumerateInstanceExtensionProperties`](https://registry.khronos.org/OpenXR/specs/1.1/man/html/xrEnumerateInstanceExtensionProperties.html)
+- [`XrExtensionProperties`](https://registry.khronos.org/OpenXR/specs/1.1/man/html/XrExtensionProperties.html)
+- [`XrResult`](https://registry.khronos.org/OpenXR/specs/1.1/man/html/XrResult.html)
+- [C++ standard draft: `std::vector`](https://eel.is/c++draft/vector)
+
+### Next concept, not yet implemented
+
+Following the tutorial's instance-creation section, learn how an `XrInstance`
+establishes application information, the requested OpenXR API version, enabled
+extensions, and enabled API layers. A successfully created instance requires
+`xrDestroyInstance`; the handle variable alone does not clean it up.
+
+Before writing that code, explain the difference between an extension appearing
+in the printed list and the application enabling it during instance creation.
